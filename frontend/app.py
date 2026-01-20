@@ -25,16 +25,16 @@ except ImportError as e:
 
 def login_page():
     """Page de connexion"""
-    st.title("🔐 Connexion - Plateforme EDT Examens")
+    st.title("Connexion - Plateforme EDT Examens")
     
     col1, col2, col3 = st.columns([1, 3, 1])
     
     with col2:
         with st.form("login_form"):
-            email = st.text_input("📧 Email", value="ali@mail.com")
-            password = st.text_input("🔒 Mot de passe", type="password", value="1234")
+            email = st.text_input("Email", value="ali@mail.com")
+            password = st.text_input("Mot de passe", type="password", value="1234")
             
-            if st.form_submit_button("✅ Se connecter"):
+            if st.form_submit_button("Se connecter"):
                 if DB_AVAILABLE:
                     user = verify_user(email, password)
                     if user:
