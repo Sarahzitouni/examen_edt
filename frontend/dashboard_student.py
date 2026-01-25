@@ -174,7 +174,7 @@ def show_student_exams(user):
         with col1:
             st.metric("Total examens confirmés", total_exams)
         with col2:
-            st.metric("Planifiés (avec date)", exams_scheduled)
+            st.metric("Planifiés", exams_scheduled)
         
         st.markdown("---")
         
@@ -187,7 +187,7 @@ def show_student_exams(user):
             # Trier par date et heure
             scheduled_exams.sort(key=lambda x: (x['date_examen'], x['heure_debut'] or datetime.min.time()))
             
-            st.subheader("📅 Examens planifiés (avec date et heure)")
+            st.subheader("📅 Examens planifiés")
             
             # Préparer les données pour le tableau
             exam_data = []
@@ -197,7 +197,7 @@ def show_student_exams(user):
                     "📅 Date": exam['date_examen'].strftime("%d/%m/%Y"),
                     "🕐 Heure": str(exam['heure_debut'])[:5] if exam['heure_debut'] else "-",
                     "🏫 Salle": exam['salle_nom'] or "Non assignée",
-                    "👨‍🏫 Surveillant": exam['professeur_surveillant'] or "Non assigné"
+                  
                 }
                 exam_data.append(exam_info)
             

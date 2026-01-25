@@ -74,9 +74,7 @@ def main():
             elif role == "CHEF_DEPT":
                 from frontend.dashboard_chef import show_chef_dashboard
                 show_chef_dashboard()
-            elif role == "VICE_DOYEN":
-                from frontend.dashboard_vicedean import show_vicedean_dashboard
-                show_vicedean_dashboard()
+            
             else:
                 st.error(f"Rôle '{role}' non pris en charge")
         except ImportError as e:

@@ -184,13 +184,44 @@ def show_validation_section(user):
                 # Convertir en objet date puis formater
                 from datetime import datetime
                 if isinstance(examen['date_examen'], str):
-                    date_obj = datetime.strptime(examen['date_examen'], '%Y-%m-%d').date()
+                    try:
+                        date_obj = datetime.strptime(examen['date_examen'], '%Y-%m-%d').date()
+                    except:
+                        date_obj = datetime.strptime(examen['date_examen'], '%Y-%m-%d %H:%M:%S').date()
                 else:
                     date_obj = examen['date_examen']
                 date_formatted = date_obj.strftime('%d/%m/%Y')
             
-            # Formater l'heure si elle existe
-            heure_formatted = examen['heure_debut'] if examen['heure_debut'] else ""
+            # Formater l'heure si elle existe (convertir secondes en HH:MM)
+            heure_formatted = ""
+            if examen['heure_debut']:
+                try:
+                    # Si l'heure est stockée comme secondes depuis minuit
+                    if isinstance(examen['heure_debut'], (int, float)):
+                        # Convertir secondes en HH:MM
+                        total_seconds = int(examen['heure_debut'])
+                        hours = total_seconds // 3600
+                        minutes = (total_seconds % 3600) // 60
+                        heure_formatted = f"{hours:02d}:{minutes:02d}"
+                    # Si c'est déjà une chaîne de caractères (format TIME)
+                    elif isinstance(examen['heure_debut'], str):
+                        # Essayer différents formats
+                        if ':' in examen['heure_debut']:
+                            # Si c'est déjà en HH:MM:SS, prendre seulement HH:MM
+                            time_parts = examen['heure_debut'].split(':')
+                            if len(time_parts) >= 2:
+                                heure_formatted = f"{time_parts[0]}:{time_parts[1]}"
+                        else:
+                            # Si c'est un nombre en secondes comme chaîne
+                            total_seconds = int(float(examen['heure_debut']))
+                            hours = total_seconds // 3600
+                            minutes = (total_seconds % 3600) // 60
+                            heure_formatted = f"{hours:02d}:{minutes:02d}"
+                    else:
+                        heure_formatted = str(examen['heure_debut'])
+                except Exception as e:
+                    print(f"Erreur de conversion heure: {e}")
+                    heure_formatted = str(examen['heure_debut'])
             
             # Déterminer l'icône de statut
             statut_icon = ""
@@ -255,21 +286,7 @@ def show_validation_section(user):
                     "Choisir l'action:",
                     ["Valider tous les examens en attente", "Refuser tous les examens en attente"]
                 )
-            
-            with col2:
-                # Option de filtrage par formation
-                formations_list = sorted(set([e['formation_nom'] for e in examens_en_attente]))
-                selected_formation = st.selectbox(
-                    "Appliquer à une formation spécifique (optionnel):",
-                    ["Toutes les formations"] + formations_list
-                )
-            
-            # Zone pour commentaire
-            commentaire = st.text_area(
-                "Commentaire (optionnel):",
-                placeholder="Ajouter un commentaire pour justifier la décision..."
-            )
-            
+           
             # Bouton d'exécution
             action_type = "Valider" if "Valider" in validation_option else "Refuser"
             new_status = 'CONFIRME' if "Valider" in validation_option else 'REFUSE'
@@ -281,27 +298,19 @@ def show_validation_section(user):
                 use_container_width=True,
                 key="execute_validation"
             ):
-                # Filtrer les examens si une formation spécifique est sélectionnée
-                examens_to_process = examens_en_attente
-                if selected_formation != "Toutes les formations":
-                    examens_to_process = [e for e in examens_en_attente if e['formation_nom'] == selected_formation]
-                
                 # Exécuter la validation
                 with st.spinner(f"{action_type} en cours..."):
                     success_count = 0
                     
-                    for examen in examens_to_process:
-                        if update_exam_status(examen['id'], new_status, user['id'], commentaire):
+                    for examen in examens_en_attente:
+                        if update_exam_status(examen['id'], new_status, user['id']):
                             success_count += 1
-                    
-                    # Afficher le résultat
-                    scope = f"pour la formation '{selected_formation}'" if selected_formation != "Toutes les formations" else ""
                     
                     if success_count > 0:
                         if new_status == 'CONFIRME':
-                            st.success(f"✅ {success_count} examens validés {scope} !")
+                            st.success(f"✅ {success_count} examens validés !")
                         else:
-                            st.success(f"❌ {success_count} examens refusés {scope} !")
+                            st.success(f"❌ {success_count} examens refusés !")
                         
                         st.balloons()
                         
@@ -315,57 +324,13 @@ def show_validation_section(user):
             st.success("🎉 Tous les examens sont déjà validés !")
         
         # Option pour annuler les confirmations
-        examens_confirme_list = [e for e in examens if e['statut'] == 'CONFIRME']
-        if examens_confirme_list:
-            st.markdown("---")
-            st.subheader("↩️ Annuler des confirmations")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Option de filtrage par formation pour l'annulation
-                formations_confirme = sorted(set([e['formation_nom'] for e in examens_confirme_list]))
-                selected_formation_cancel = st.selectbox(
-                    "Formation pour annuler:",
-                    ["Toutes les formations"] + formations_confirme,
-                    key="cancel_select"
-                )
-            
-            with col2:
-                if st.button(
-                    "↩️ Remettre en attente",
-                    type="secondary",
-                    use_container_width=True,
-                    key="cancel_button"
-                ):
-                    # Filtrer les examens
-                    examens_to_cancel = examens_confirme_list
-                    if selected_formation_cancel != "Toutes les formations":
-                        examens_to_cancel = [e for e in examens_confirme_list if e['formation_nom'] == selected_formation_cancel]
-                    
-                    with st.spinner("Annulation en cours..."):
-                        canceled_count = 0
-                        
-                        for examen in examens_to_cancel:
-                            if update_exam_status(examen['id'], 'EN_ATTENTE', user['id'], "Annulation confirmation"):
-                                canceled_count += 1
-                        
-                        if canceled_count > 0:
-                            scope = f"pour la formation '{selected_formation_cancel}'" if selected_formation_cancel != "Toutes les formations" else ""
-                            st.info(f"↩️ {canceled_count} examens remis en attente {scope} !")
-                            
-                            import time
-                            time.sleep(2)
-                            st.rerun()
-                        else:
-                            st.error("❌ Aucun examen n'a pu être annulé")
-        
+       
         cursor.close()
         conn.close()
         
     except Exception as e:
         st.error(f"Erreur: {str(e)}")
-
+        
 def show_statistics_section(user):
     """Section de statistiques du département"""
     st.header("📊 Statistiques du Département")

@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import sys
 import os
+import time
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
@@ -16,7 +17,7 @@ try:
         fetch_examens_by_session_grouped, create_user,
         verify_password_strength
     )
-    from backend.algorithm_simple import SimplePlanningGenerator, create_session_and_generate_exams, planify_session_exams
+    from backend.algorithm_simple import SimplePlanningGenerator, create_session_and_generate_exams, planify_session_exams, regenerate_session_completely_interface
     ALGO_AVAILABLE = True
 except ImportError as e:
     ALGO_AVAILABLE = False
@@ -98,11 +99,7 @@ def show_overview():
         if result and result['nb_refused'] > 0:
             st.error(f"🚨 {result['nb_refused']} examen(s) refusé(s) par le chef de département")
             
-            # Bouton pour voir les détails
-            if st.button("👀 Voir les examens refusés", key="view_refused_exams"):
-                st.session_state['show_refused_exams'] = True
-                st.rerun()
-            
+           
             st.divider()
     try:
         # Récupérer les données
@@ -162,7 +159,7 @@ def show_new_session():
         default_end = start_date + timedelta(days=10) if 'start_date' in locals() else datetime.now().date() + timedelta(days=17)
         end_date = st.date_input("Date de fin *", value=default_end)
         
-        st.info("ℹ️ La planification automatique s'occupera de répartir les examens sur cette période.")
+     
         
         submitted = st.form_submit_button("🚀 Créer et Planifier Automatiquement", type="primary")
         
@@ -243,27 +240,16 @@ def show_existing_sessions():
         return
     
     # Liste des sessions
-    st.subheader("🗂️ Liste des sessions")
     for session in sessions:
         with st.container():
-            col1, col2, col3 = st.columns([4, 3, 1])
+            col1,  col3 = st.columns([4, 1])
             
             with col1:
                 st.markdown(f"**{session['nom']}**")
                 st.caption(f"📅 Du {session['date_debut']} au {session['date_fin']}")
-                st.caption(f"📊 {session['nb_examens']} examens • ID: {session['id']}")
+                st.caption(f"📊 {session['nb_examens']} examens")
             
-            with col2:
-                status = session['statut']
-                if status == 'PUBLIEE':
-                    st.success(f"✅ Publiée")
-                elif status == 'PLANIFICATION':
-                    st.warning(f"🔄 En planification")
-                elif status == 'CREATION':
-                    st.info(f"📝 En création")
-                else:
-                    st.info(f"📄 {status}")
-            
+          
             with col3:
                 if st.button("🔍 Voir", key=f"view_{session['id']}"):
                     st.session_state['selected_session'] = session['id']
@@ -277,23 +263,28 @@ def show_existing_sessions():
 
 def show_session_details(session_id):
     """Afficher les détails d'une session spécifique"""
-    st.subheader(f"🔍 Détails de la session (ID: {session_id})")
+   
     
-    # Bouton de retour
-    if st.button("← Retour à la liste"):
-        if 'selected_session' in st.session_state:
-            del st.session_state['selected_session']
-        st.rerun()
+    # AJOUTER UNE NOUVELLE SECTION AVEC DEUX BOUTONS
     
-    # Bouton pour replanifier
-    if st.button("🔄 Replanifier cette session", type="secondary"):
-        with st.spinner("Replanification en cours..."):
-            results = planify_session_exams(session_id)
-            if results['success']:
-                st.success(results['message'])
-                st.rerun()
-            else:
-                st.error(results['message'])
+  
+    st.subheader("🔄 Options de replanification")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Bouton pour replanifier seulement les examens non planifiés
+        if st.button("🔄 Replanifier cette session", type="secondary", use_container_width=True):
+            with st.spinner("Replanification en cours..."):
+                results = planify_session_exams(session_id)
+                if results['success']:
+                    st.success(results['message'])
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error(results['message'])
+    
+    
     
     # Récupérer les examens
     examens = fetch_examens_by_session_grouped(session_id)

@@ -21,10 +21,12 @@ class SimplePlanningGenerator:
         self.time_slots = [
             '08:00:00',  # 8h-9h30
             '09:30:00',  # 9h30-11h
+             '10:00:00',
             '11:00:00',  # 11h-12h30
             '14:00:00',  # 14h-15h30
-            '15:30:00',  # 15h30-17h
-            '17:00:00'   # 17h-18h30
+            '15:00:00',  # 15h30-17h
+             '16:30:00',
+           
         ]
     
     def get_connection(self):
@@ -170,7 +172,7 @@ class SimplePlanningGenerator:
                 JOIN modules m ON e.module_id = m.id
                 JOIN formations f ON e.formation_id = f.id
                 JOIN groupes g ON e.groupe_id = g.id
-                WHERE e.session_id = %s AND e.statut = 'EN_ATTENTE'
+                WHERE e.session_id = %s
                 ORDER BY f.id, m.id, g.id
             """, (session_id,))
             
@@ -646,6 +648,91 @@ class SimplePlanningGenerator:
                 cursor.close()
                 conn.close()
 
+def regenerate_session_completely(session_id):
+    """
+    Regénérer complètement une session : efface TOUT et refait un planning
+    Version corrigée sans problème de self
+    """
+    start_time = time.time()
+    
+    generator = SimplePlanningGenerator()
+    conn = generator.get_connection()
+    
+    if not conn:
+        return {"success": False, "message": "Erreur de connexion"}
+    
+    try:
+        cursor = conn.cursor(dictionary=True)
+        
+        # 1. Vérifier si la session existe
+        cursor.execute("SELECT * FROM sessions_examens WHERE id = %s", (session_id,))
+        session = cursor.fetchone()
+        
+        if not session:
+            cursor.close()
+            conn.close()
+            return {"success": False, "message": "Session non trouvée"}
+        
+        # 2. SUPPRIMER TOUTES les surveillances existantes pour cette session
+        cursor.execute("""
+            DELETE FROM surveillances 
+            WHERE examen_id IN (
+                SELECT id FROM examens WHERE session_id = %s
+            )
+        """, (session_id,))
+        
+        # 3. RÉINITIALISER TOUS les examens de la session (tous statuts)
+        cursor.execute("""
+            UPDATE examens 
+            SET date_examen = NULL,
+                heure_debut = NULL,
+                salle_id = NULL,
+                statut = 'EN_ATTENTE',
+                last_modified = NOW()
+            WHERE session_id = %s
+        """, (session_id,))
+        
+        # 4. SUPPRIMER les conflits existants
+        cursor.execute("""
+            DELETE FROM conflits_examens 
+            WHERE examen1_id IN (
+                SELECT id FROM examens WHERE session_id = %s
+            ) OR examen2_id IN (
+                SELECT id FROM examens WHERE session_id = %s
+            )
+        """, (session_id, session_id))
+        
+        conn.commit()
+        
+        # 5. Planifier à nouveau COMPLÈTEMENT
+        planning_result = generator.planify_session(session_id)
+        
+        cursor.close()
+        conn.close()
+        
+        end_time = time.time()
+        
+        return {
+            "success": planning_result.get("success", False),
+            "message": f"✅ Session complètement regénérée ! {planning_result.get('message', '')}",
+            "execution_time": round(end_time - start_time, 2),
+            "details": planning_result.get("details", []),
+            "exams_scheduled": planning_result.get("exams_scheduled", 0),
+            "original_message": planning_result.get("message", "")
+        }
+        
+    except Error as e:
+        print(f"Erreur de regénération complète: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "message": f"❌ Erreur lors de la regénération: {str(e)}"}
+    finally:
+        if conn:
+            try:
+                cursor.close()
+                conn.close()
+            except:
+                pass
 # Fonctions d'interface
 def create_session_and_generate_exams(nom_session, date_debut, date_fin, formation_ids):
     """Créer une session et générer les examens"""
@@ -662,6 +749,10 @@ def detect_conflits_for_session(session_id):
     generator = SimplePlanningGenerator()
     return generator.detecter_conflits(session_id)
 
+# AJOUTER CETTE LIGNE juste après la fonction detect_conflits_for_session :
+def regenerate_session_completely_interface(session_id):
+    """Interface pour la regénération complète d'une session"""
+    return regenerate_session_completely(session_id)
 # Test rapide
 if __name__ == "__main__":
     # Testez la planification

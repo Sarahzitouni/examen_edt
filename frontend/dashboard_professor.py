@@ -78,7 +78,7 @@ def show_professor_dashboard():
 
 
 def show_surveillance(user):
-    """Afficher les surveillances CONFIRMÉES du professeur"""
+    """Afficher les surveillances CONFIRMÉES et PLANIFIÉES du professeur"""
     st.header("📋 Mes Surveillance")
     
     if not DB_AVAILABLE:
@@ -99,226 +99,106 @@ def show_surveillance(user):
         
         prof_id = prof_info['id']
         
-        # Récupérer uniquement les surveillances pour les examens CONFIRMÉS
+        # Récupérer uniquement les surveillances CONFIRMÉES et PLANIFIÉES (avec date)
         cursor.execute("""
-            SELECT 
-                s.id,
-                s.date_surveillance,
-                s.heure_debut,
-                e.duree_minutes,
-                e.statut as examen_statut,
-                m.nom as module_nom,
-                f.nom as formation_nom,
-                sa.nom as salle_nom,
-                g.nom as groupe_nom,
-                g.effectif,
-                se.nom as session_nom
-            FROM surveillances s
-            JOIN examens e ON s.examen_id = e.id
-            JOIN modules m ON e.module_id = m.id
-            JOIN formations f ON e.formation_id = f.id
-            LEFT JOIN salles sa ON e.salle_id = sa.id
-            LEFT JOIN groupes g ON e.groupe_id = g.id
-            LEFT JOIN sessions_examens se ON e.session_id = se.id
-            WHERE s.prof_id = %s
-            AND e.statut = 'CONFIRME'  -- UNIQUEMENT LES EXAMENS CONFIRMÉS
-            ORDER BY 
-                CASE 
-                    WHEN s.date_surveillance IS NULL THEN 1
-                    ELSE 0
-                END,
-                s.date_surveillance,
-                s.heure_debut
-        """, (prof_id,))
+    SELECT DISTINCT
+        e.id as examen_id,
+        m.nom as module_nom,
+        f.nom as formation_nom,
+        g.nom as groupe_nom,
+        g.effectif,
+        se.nom as session_nom,
+        s.date_surveillance,
+        s.heure_debut,
+        e.duree_minutes,
+        COALESCE(s.salle_id, e.salle_id) as salle_id,  -- Prendre soit la salle de surveillance, soit celle de l'examen
+        COALESCE(sa.nom, sa2.nom) as salle_nom,        -- Nom correspondant
+        COUNT(DISTINCT s.prof_id) as nb_surveillants
+    FROM surveillances s
+    JOIN examens e ON s.examen_id = e.id
+    JOIN modules m ON e.module_id = m.id
+    JOIN formations f ON e.formation_id = f.id
+    JOIN groupes g ON e.groupe_id = g.id
+    JOIN sessions_examens se ON e.session_id = se.id
+    LEFT JOIN salles sa ON s.salle_id = sa.id  -- Salle spécifique à la surveillance
+    LEFT JOIN salles sa2 ON e.salle_id = sa2.id  -- Salle assignée à l'examen
+    WHERE s.prof_id = %s
+    AND e.statut = 'CONFIRME'
+    AND s.date_surveillance IS NOT NULL
+    GROUP BY e.id, m.nom, f.nom, g.nom, g.effectif, se.nom, 
+             s.date_surveillance, s.heure_debut, e.duree_minutes,
+             COALESCE(s.salle_id, e.salle_id),
+             COALESCE(sa.nom, sa2.nom)
+    ORDER BY s.date_surveillance, s.heure_debut
+""", (prof_id,))
         
         surveillances = cursor.fetchall()
         
+        cursor.close()
+        conn.close()
+        
         if not surveillances:
-            st.info("📭 Aucune surveillance confirmée pour le moment.")
-            
-            # Afficher les surveillances en attente (optionnel)
-            cursor.execute("""
-                SELECT COUNT(*) as count
-                FROM surveillances s
-                JOIN examens e ON s.examen_id = e.id
-                WHERE s.prof_id = %s
-                AND e.statut = 'EN_ATTENTE'
-            """, (prof_id,))
-            
-            en_attente = cursor.fetchone()['count']
-            if en_attente > 0:
-                st.info(f"ℹ️ Vous avez {en_attente} surveillance(s) en attente de confirmation")
-            
+            st.info("📭 Aucune surveillance planifiée pour le moment.")
             return
         
         # Statistiques
         total_surv = len(surveillances)
-        surveillances_planifiees = len([s for s in surveillances if s['date_surveillance'] is not None])
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total surveillances confirmées", total_surv)
-        with col2:
-            st.metric("Planifiées (avec date)", surveillances_planifiees)
-        
+        st.metric("Total surveillances planifiées", total_surv)
         st.markdown("---")
         
-        # Séparer les surveillances planifiées et non planifiées
-        scheduled_surv = [s for s in surveillances if s['date_surveillance'] is not None]
-        unscheduled_surv = [s for s in surveillances if s['date_surveillance'] is None]
-        
-        # Afficher d'abord les surveillances planifiées (avec date)
-        if scheduled_surv:
-            # Trier par date et heure
-            scheduled_surv.sort(key=lambda x: (x['date_surveillance'], x['heure_debut'] or datetime.min.time()))
+        # Préparer les données pour le tableau
+        surv_data = []
+        for surv in surveillances:
+            # Calculer l'heure de fin
+            heure_debut = surv['heure_debut']
+            duree = surv['duree_minutes']
+            heure_str = "-"
             
-            st.subheader("📅 Surveillances planifiées")
-            
-            # Préparer les données pour le tableau
-            surv_data = []
-            for surv in scheduled_surv:
-                # Calculer l'heure de fin
-                heure_debut = surv['heure_debut']
-                duree = surv['duree_minutes']
-                
-                if heure_debut:
-                    heure_debut_obj = datetime.strptime(str(heure_debut), '%H:%M:%S')
-                    heure_fin_obj = heure_debut_obj.replace(
-                        hour=heure_debut_obj.hour + duree // 60,
-                        minute=heure_debut_obj.minute + duree % 60
-                    )
-                    heure_fin = heure_fin_obj.strftime('%H:%M')
-                    heure_str = f"{heure_debut_obj.strftime('%H:%M')} - {heure_fin}"
+            if heure_debut:
+                # Gérer à la fois les strings et les timedelta
+                if isinstance(heure_debut, str):
+                    # C'est un string "HH:MM:SS"
+                    heure_debut_time = heure_debut_obj.time()
+                    total_minutes = heure_debut_time.hour * 60 + heure_debut_time.minute + duree
+                    heure_debut_str = heure_debut_obj.strftime('%H:%M')
+                    
+                    # Calcul de l'heure de fin
+                    total_minutes = heure_debut_obj.hour * 60 + heure_debut_obj.minute + duree
                 else:
-                    heure_str = "-"
+                    # C'est un timedelta, convertir en heures:minutes
+                    total_seconds = heure_debut.total_seconds()
+                    hours = int(total_seconds // 3600)
+                    minutes = int((total_seconds % 3600) // 60)
+                    heure_debut_str = f"{hours:02d}:{minutes:02d}"
+                    
+                    # Calcul de l'heure de fin en minutes depuis minuit
+                    total_minutes = hours * 60 + minutes + duree
                 
-                surv_info = {
-                    "📚 Module": surv['module_nom'],
-                    "📅 Date": surv['date_surveillance'].strftime("%d/%m/%Y"),
-                    "🕐 Horaire": heure_str,
-                    "🏫 Salle": surv['salle_nom'] or "Non assignée",
-                    "👥 Groupe": surv['groupe_nom'] or "-",
-                    "📋 Session": surv['session_nom'] or "-"
-                }
-                surv_data.append(surv_info)
-            
-            # Afficher le tableau
-            st.dataframe(
-                surv_data,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Vue détaillée
-            with st.expander("📋 Voir le détail des surveillances"):
-                for idx, surv in enumerate(scheduled_surv, 1):
-                    with st.container():
-                        col_left, col_right = st.columns([3, 1])
-                        
-                        with col_left:
-                            # Informations de la surveillance
-                            st.markdown(f"**{idx}. {surv['module_nom']}**")
-                            st.write(f"📅 **Date :** {surv['date_surveillance'].strftime('%A %d/%m/%Y')}")
-                            
-                            if surv['heure_debut']:
-                                heure_debut_obj = datetime.strptime(str(surv['heure_debut']), '%H:%M:%S')
-                                heure_fin_obj = heure_debut_obj.replace(
-                                    hour=heure_debut_obj.hour + surv['duree_minutes'] // 60,
-                                    minute=heure_debut_obj.minute + surv['duree_minutes'] % 60
-                                )
-                                st.write(f"🕐 **Horaire :** {heure_debut_obj.strftime('%H:%M')} - {heure_fin_obj.strftime('%H:%M')}")
-                                st.write(f"⏱️ **Durée :** {surv['duree_minutes']} minutes")
-                            else:
-                                st.write("🕐 **Horaire :** À définir")
-                            
-                            if surv['salle_nom']:
-                                st.write(f"🏫 **Salle :** {surv['salle_nom']}")
-                            
-                            if surv['groupe_nom']:
-                                st.write(f"👥 **Groupe :** {surv['groupe_nom']} ({surv['effectif']} étudiants)")
-                            
-                            if surv['session_nom']:
-                                st.write(f"📋 **Session :** {surv['session_nom']}")
-                        
-                        with col_right:
-                            # Indicateur visuel
-                            st.markdown("### ✅")
-                            st.caption("Confirmé")
-                        
-                        st.divider()
-        
-        # Afficher les surveillances confirmées mais non planifiées (sans date)
-        if unscheduled_surv:
-            st.markdown("---")
-            st.subheader("⏳ Surveillances confirmées (en attente de planification)")
-            
-            # Préparer les données pour le tableau
-            unscheduled_data = []
-            for surv in unscheduled_surv:
-                surv_info = {
-                    "📚 Module": surv['module_nom'],
-                    "📅 Date": "À définir",
-                    "🕐 Horaire": "À définir",
-                    "🏫 Salle": "À définir",
-                    "👥 Groupe": surv['groupe_nom'] or "-",
-                    "📋 Session": surv['session_nom'] or "-"
-                }
-                unscheduled_data.append(surv_info)
-            
-            # Afficher le tableau
-            st.dataframe(
-                unscheduled_data,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            st.info("ℹ️ Ces surveillances sont confirmées mais pas encore planifiées. Les dates et salles seront communiquées ultérieurement.")
-        
-        # Résumé : prochaine surveillance
-        st.markdown("---")
-        today = datetime.now().date()
-        
-        # Compter les surveillances à venir (dans le futur)
-        upcoming_surv = [s for s in scheduled_surv if s['date_surveillance'] >= today]
-        
-        if upcoming_surv:
-            # Trier par date la plus proche
-            upcoming_surv.sort(key=lambda x: x['date_surveillance'])
-            
-            st.subheader("🎯 Prochaine surveillance")
-            next_surv = upcoming_surv[0]
-            
-            days_until = (next_surv['date_surveillance'] - today).days
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.write(f"**{next_surv['module_nom']}**")
-                st.write(f"📅 {next_surv['date_surveillance'].strftime('%A %d/%m/%Y')}")
+                # Calcul de l'heure de fin
+                heure_fin_hour = (total_minutes // 60) % 24
+                heure_fin_minute = total_minutes % 60
+                heure_fin_str = f"{heure_fin_hour:02d}:{heure_fin_minute:02d}"
                 
-                if next_surv['heure_debut']:
-                    heure_debut_obj = datetime.strptime(str(next_surv['heure_debut']), '%H:%M:%S')
-                    heure_fin_obj = heure_debut_obj.replace(
-                        hour=heure_debut_obj.hour + next_surv['duree_minutes'] // 60,
-                        minute=heure_debut_obj.minute + next_surv['duree_minutes'] % 60
-                    )
-                    st.write(f"🕐 {heure_debut_obj.strftime('%H:%M')} - {heure_fin_obj.strftime('%H:%M')}")
-                
-                if next_surv['salle_nom']:
-                    st.write(f"🏫 {next_surv['salle_nom']}")
-                
-                if next_surv['groupe_nom']:
-                    st.write(f"👥 {next_surv['groupe_nom']}")
+                heure_str = f"{heure_debut_str} - {heure_fin_str}"
             
-            with col2:
-                if days_until == 0:
-                    st.success("**Aujourd'hui!**")
-                elif days_until == 1:
-                    st.warning(f"**Demain**")
-                else:
-                    st.info(f"**Dans {days_until} jours**")
+            surv_info = {
+                "📚 Module": surv['module_nom'],
+                "📅 Date": surv['date_surveillance'].strftime("%d/%m/%Y"),
+                "🕐 Horaire": heure_str,
+                "🏫 Salle": surv['salle_nom'] or "Non assignée",
+                "👥 Groupe": surv['groupe_nom'] or "-",
+                "📋 Session": surv['session_nom'] or "-",
+                "👥 Effectif": surv['effectif'] or 0
+            }
+            surv_data.append(surv_info)
         
-        cursor.close()
-        conn.close()
+        # Afficher le tableau
+        st.dataframe(
+            surv_data,
+            use_container_width=True,
+            hide_index=True
+        )
         
     except Exception as e:
         st.error(f"Erreur lors du chargement des surveillances : {str(e)}")
@@ -377,7 +257,7 @@ def show_professor_profile(user):
         # Statistiques du professeur
         st.subheader("📊 Mes statistiques")
         
-        # Compter les surveillances confirmées
+        # Compter les surveillances confirmées et planifiées
         cursor.execute("""
             SELECT COUNT(*) as total_surv
             FROM surveillances s
@@ -385,30 +265,13 @@ def show_professor_profile(user):
             JOIN professeurs p ON s.prof_id = p.id
             WHERE p.user_id = %s
             AND e.statut = 'CONFIRME'
+            AND s.date_surveillance IS NOT NULL
         """, (user['id'],))
         
         stats = cursor.fetchone()
         total_surv = stats['total_surv'] if stats else 0
         
-        # Compter les surveillances cette semaine
-        cursor.execute("""
-            SELECT COUNT(*) as surv_semaine
-            FROM surveillances s
-            JOIN examens e ON s.examen_id = e.id
-            JOIN professeurs p ON s.prof_id = p.id
-            WHERE p.user_id = %s
-            AND e.statut = 'CONFIRME'
-            AND YEARWEEK(s.date_surveillance, 1) = YEARWEEK(CURDATE(), 1)
-        """, (user['id'],))
-        
-        stats_semaine = cursor.fetchone()
-        surv_semaine = stats_semaine['surv_semaine'] if stats_semaine else 0
-        
-        col_stat1, col_stat2 = st.columns(2)
-        with col_stat1:
-            st.metric("Surveillances confirmées (total)", total_surv)
-        with col_stat2:
-            st.metric("Surveillances cette semaine", surv_semaine)
+        st.metric("Surveillances planifiées (total)", total_surv)
 
         st.markdown("---")
         
@@ -447,6 +310,10 @@ def show_professor_profile(user):
 
 if __name__ == "__main__":
     # Simulation d'un utilisateur professeur pour le test
-   
+    st.session_state.user = {
+        'id': 4,
+        'email': 'prof.ahmed@univ.dz',
+        'role': 'PROF'
+    }
     
     show_professor_dashboard()
